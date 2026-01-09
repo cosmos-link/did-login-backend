@@ -49,11 +49,11 @@ jobs:
       - name: Verify Go application
         run: |
           echo "🔍 验证Go应用源码..."
-          if [ ! -f "src/Go-WebServer-V1.1/main.go" ]; then
+          if [ ! -f "src/main.go" ]; then
             echo "❌ 错误: main.go 不存在"
             exit 1
           fi
-          if [ ! -f "src/Go-WebServer-V1.1/go.mod" ]; then
+          if [ ! -f "src/go.mod" ]; then
             echo "❌ 错误: go.mod 不存在"
             exit 1
           fi

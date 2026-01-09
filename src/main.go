@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"

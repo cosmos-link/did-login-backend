@@ -1,0 +1,190 @@
+name: Deploy to Private Server (WASM)
+
+on:
+  push:
+    branches: [main, master]
+
+# 核心调整：移除Docker相关变量，新增WASM专属配置
+env:
+  APP_NAME: ${{ vars.APP_NAME || 'go-mqtt-adapter' }}
+  SERVER_HOST: ${{ vars.SERVER_HOST }}
+  SERVER_USER: ${{ vars.SERVER_USER }}
+  SERVER_PORT: ${{ vars.SERVER_PORT || '22' }}
+  APP_PORT: ${{ vars.APP_PORT || '50107' }}
+  # WASM核心配置（替换原Docker变量）
+  WASM_FILE: contract.wasm          # 编译后的WASM文件名
+  WASM_RUNTIME: wasmtime            # 轻量级WASM运行时（CentOS 8适配）
+  WASM_INSTALL_PATH: /usr/local/bin # WASM运行时安装路径
+  SERVER_WASM_DIR: /home/deployer/wasm # 服务器存放WASM文件的目录
+  SERVER_LOG_DIR: /home/deployer/log/${{ env.APP_NAME }} # 日志目录（保留原路径）
+
+jobs:
+  build-and-deploy-wasm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      # 关键点1：移除Docker变量，定义WASM相关变量
+      - name: Set WASM variables
+        run: |
+          echo "SERVER_WASM_FILE_PATH=${{ env.SERVER_WASM_DIR }}/${{ env.WASM_FILE }}" >> $GITHUB_ENV
+          echo "WASM_RUNTIME_CMD=${{ env.WASM_INSTALL_PATH }}/${{ env.WASM_RUNTIME }}" >> $GITHUB_ENV
+
+      # 关键点2：仅编译WASM程序（移除Linux二进制编译）
+      - name: Build WASM application
+        run: |
+          echo "🔨 编译WASM应用程序..."
+          cd src
+          # 仅保留WASM编译（GOOS=js GOARCH=wasm是Go编译WASM的固定参数）
+          GOOS=js GOARCH=wasm go build \
+            -ldflags="-s -w" \
+            -o ../${{ env.WASM_FILE }} \
+            ./...
+          # 验证WASM文件生成（容错）
+          if [ ! -f ../${{ env.WASM_FILE }} ]; then
+            echo "❌ WASM文件编译失败"
+            exit 1
+          fi
+          echo "✅ WASM文件编译完成：${{ env.WASM_FILE }}"
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      # 关键点3：仅传输WASM文件（移除Docker镜像传输）
+      - name: Copy WASM file to server
+        run: |
+          echo "📤 传输WASM文件到服务器..."
+          # 先在服务器创建WASM目录
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p ${{ env.SERVER_WASM_DIR }}"
+          # 仅传输WASM文件（替代原Docker镜像传输）
+          scp -P ${{ env.SERVER_PORT }} \
+            ${{ env.WASM_FILE }} \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.SERVER_WASM_FILE_PATH }}
+          echo "✅ WASM文件传输完成"
+
+      # 关键点4：替换Docker部署为WASM部署（核心）
+      - name: Deploy WASM on private server
+        run: |
+          echo "🚀 在服务器执行WASM部署（阿里云CentOS 8）..."
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            set -e
+            echo "=== 开始WASM部署 ==="
+            echo "时间: $(date)"
+            echo "Commit: ${{ github.sha }}"
+
+            # 1. 安装WASM运行时（Wasmtime，替代Docker环境）
+            echo "📦 安装/检查WASM运行时..."
+            if ! command -v ${{ env.WASM_RUNTIME }} &> /dev/null; then
+              echo "🔧 安装Wasmtime（CentOS 8 x86_64）..."
+              # 下载官方预编译包（适配CentOS 8，无需编译）
+              sudo curl -sSL https://github.com/bytecodealliance/wasmtime/releases/download/v19.0.0/wasmtime-v19.0.0-x86_64-linux.tar.xz -o /tmp/wasmtime.tar.xz
+              sudo tar -xf /tmp/wasmtime.tar.xz -C /tmp
+              sudo mv /tmp/wasmtime-v19.0.0-x86_64-linux/wasmtime ${{ env.WASM_INSTALL_PATH }}/
+              sudo chmod +x ${{ env.WASM_RUNTIME_CMD }}
+              rm -rf /tmp/wasmtime*
+              echo "✅ Wasmtime安装完成"
+            else
+              echo "✅ Wasmtime已安装：$(${{ env.WASM_RUNTIME_CMD }} --version)"
+            fi
+
+            # 2. 日志目录配置（保留原CentOS 8 SELinux适配逻辑）
+            echo "📂 配置日志目录..."
+            sudo mkdir -p ${{ env.SERVER_LOG_DIR }}
+            sudo chown -R ${{ env.SERVER_USER }}:${{ env.SERVER_USER }} ${{ env.SERVER_LOG_DIR }}
+            # 修复CentOS 8 SELinux上下文（核心兼容点）
+            sudo setenforce 0 2>/dev/null || true
+            sudo restorecon -RvFi ${{ env.SERVER_LOG_DIR }} 2>/dev/null || true
+            sudo chcon -R -t var_log_t ${{ env.SERVER_LOG_DIR }} 2>/dev/null || true
+
+            # 3. 停止旧WASM服务（替代原停止Docker容器）
+            echo "🔴 停止旧WASM服务..."
+            sudo systemctl stop ${{ env.APP_NAME }} 2>/dev/null || true
+            sudo systemctl disable ${{ env.APP_NAME }} 2>/dev/null || true
+
+            # 4. 创建systemd服务（运行WASM程序，替代Docker容器）
+            echo "⚙️ 创建WASM systemd服务..."
+            sudo tee /etc/systemd/system/${{ env.APP_NAME }}.service > /dev/null << 'SERVICE_EOF'
+          [Unit]
+          Description=WASM Service - ${{ env.APP_NAME }}
+          After=network.target
+          Wants=network-online.target
+
+          [Service]
+          # 运行用户（保持原降权逻辑，非root更安全）
+          User=${{ env.SERVER_USER }}
+          Group=${{ env.SERVER_USER }}
+          # 核心：用Wasmtime运行WASM文件，绑定端口（替代Docker容器启动）
+          ExecStart=${{ env.WASM_RUNTIME_CMD }} \
+            --tcplisten 0.0.0.0:${{ env.APP_PORT }} \
+            ${{ env.SERVER_WASM_FILE_PATH }}
+          # 崩溃自动重启（替代Docker的--restart always）
+          Restart=always
+          RestartSec=3
+          # 日志重定向（替代Docker容器日志）
+          StandardOutput=append:${{ env.SERVER_LOG_DIR }}/stdout.log
+          StandardError=append:${{ env.SERVER_LOG_DIR }}/stderr.log
+          # CentOS 8适配：关闭systemd权限隔离
+          ProtectHome=false
+          ProtectSystem=false
+          PrivateTmp=false
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE_EOF
+
+            # 5. 启动WASM服务（替代Docker run）
+            echo "🟢 启动WASM服务..."
+            sudo systemctl daemon-reload
+            sudo systemctl start ${{ env.APP_NAME }}
+            sudo systemctl enable ${{ env.APP_NAME }}
+
+            echo "✅ 阿里云CentOS 8 WASM部署完成"
+          EOF
+
+      # 关键点5：替换Docker验证为WASM验证
+      - name: Verify WASM deployment
+        run: |
+          echo "🔍 验证WASM部署..."
+          sleep 5
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "
+            set -e
+            echo '===== 1. 验证WASM服务状态 ====='
+            # 检查systemd服务（替代Docker容器状态）
+            SERVICE_STATUS=\$(sudo systemctl is-active ${{ env.APP_NAME }})
+            if [ \"\$SERVICE_STATUS\" != \"active\" ]; then
+              echo '❌ WASM服务未运行：'\$SERVICE_STATUS
+              sudo systemctl status ${{ env.APP_NAME }}
+              exit 1
+            fi
+            echo '✅ WASM服务运行正常'
+
+            echo -e '\n===== 2. 验证端口监听 ====='
+            # 检查Wasmtime监听端口（替代Docker proxy）
+            if ! ss -tlnp | grep -E \":${{ env.APP_PORT }}\.*${{ env.WASM_RUNTIME }}\"; then
+              echo '❌ 端口${{ env.APP_PORT }}未被Wasmtime监听'
+              ss -tlnp | grep -E '${{ env.WASM_RUNTIME }}|${{ env.APP_PORT }}'
+              exit 1
+            fi
+            echo '✅ 端口${{ env.APP_PORT }}监听正常'
+
+            echo -e '\n===== 3. 验证WASM日志 ====='
+            # 检查WASM运行日志（替代Docker容器日志）
+            if [ -f ${{ env.SERVER_LOG_DIR }}/stderr.log ] && grep -i 'error\|panic\|fatal' ${{ env.SERVER_LOG_DIR }}/stderr.log; then
+              echo '⚠️ WASM日志存在错误：'
+              cat ${{ env.SERVER_LOG_DIR }}/stderr.log | head -10
+            else
+              echo '✅ WASM日志无明显错误'
+            fi
+          "
+          echo "✅ WASM部署验证通过"

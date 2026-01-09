@@ -1,0 +1,167 @@
+name: Deploy to Private Server
+
+on:
+  push:
+    branches: [main, master]
+
+env:
+  # 在这里设置你的服务器信息
+  APP_NAME: ${{ vars.APP_NAME || 'go-mqtt-adapter' }}
+  SERVER_HOST: ${{ vars.SERVER_HOST }}
+  SERVER_USER: ${{ vars.SERVER_USER }}
+  SERVER_PORT: ${{ vars.SERVER_PORT || '22' }}
+  APP_PORT: ${{ vars.APP_PORT || '50107' }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest  # GitHub 托管的 Runner
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 设置 Go 环境
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      # 3. 构建 Go 应用
+      - name: Build application
+        run: |
+          echo "🔨 构建应用程序..."
+          cd src
+          
+          # 构建主程序
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w" \
+            -o ../${{ env.APP_NAME }} \
+            ./...
+          
+          # 构建 WASM 版本（如果需要）
+          GOOS=js GOARCH=wasm go build \
+            -o ../contract.wasm \
+            ./...
+          
+          echo "✅ 构建完成"
+
+      # 4. 构建 Docker 镜像
+      - name: Build Docker image
+        run: |
+          echo "🐳 构建 Docker 镜像..."
+          docker build -t ${{ env.APP_NAME }}:${{ github.sha }} .
+          docker tag ${{ env.APP_NAME }}:${{ github.sha }} ${{ env.APP_NAME }}:latest
+
+      # 5. 保存 SSH 私钥
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          
+          # 添加到 known_hosts（避免第一次连接确认）
+          ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      # 6. 传输文件到私链服务器
+      - name: Copy files to server
+        run: |
+          echo "📤 传输文件到服务器..."
+          
+          # 方法A：传输二进制文件
+          scp -P ${{ env.SERVER_PORT }} \
+            ${{ env.APP_NAME }} \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/tmp/
+          
+          # 方法B：传输 Dockerfile 并在服务器构建（如果网络慢）
+          scp -P ${{ env.SERVER_PORT }} \
+            Dockerfile src/./... \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/tmp/deploy/
+
+      # 7. 在私链服务器执行部署
+      - name: Deploy on private server
+        run: |
+          echo "🚀 在私链服务器执行部署..."
+          
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            set -e
+            echo "=== 开始部署（阿里云 CentOS 8 适配） ==="
+            echo "时间: $(date)"
+            echo "Commit: ${{ github.sha }}"
+          
+            # ========== 阿里云 CentOS 8 SELinux 修复核心 start ==========
+            # 1. 临时设置SELinux为Permissive（彻底规避上下文报错，阿里云环境推荐）
+            sudo setenforce 0 2>/dev/null || true
+          
+            # 2. 停止服务（避免文件占用）
+            sudo systemctl stop ${{ env.APP_NAME }} 2>/dev/null || true
+          
+            # 3. 重建日志目录（先删除无标签的目录，重新创建后自动初始化标签）
+            sudo rm -rf /home/deployer/log 2>/dev/null || true
+            sudo mkdir -p /home/deployer/log
+          
+            # 4. 关键：先恢复目录的基础SELinux标签（用restorecon初始化，适配阿里云镜像）
+            # -R 递归处理 -v 输出详情 -F 强制恢复 -i 忽略不存在的文件
+            sudo restorecon -RvFi /home/deployer/log 2>/dev/null || true
+          
+            # 5. 再修改上下文类型（此时已有基础标签，可正常修改）
+            # 加 || true 跳过无文件时的报错（日志文件未创建时不影响）
+            sudo chcon -R -t var_log_t /home/deployer/log 2>/dev/null || true
+          
+            # 6. 修改属主（确保root权限，阿里云环境需用绝对路径）
+            sudo /usr/bin/chown -R deployer:deployer /home/deployer/log
+          
+            # 7. 删除冲突日志文件（避免无标签文件干扰）
+            sudo rm -f /home/deployer/log/${{ env.APP_NAME }}.log 2>/dev/null || true
+          
+            # 8. 修复systemd服务文件（适配阿里云CentOS 8）
+            sudo tee /etc/systemd/system/${{ env.APP_NAME }}.service > /dev/null << 'SERVICE_EOF'
+          [Unit]
+          Description=WASM ${{ env.APP_NAME }} Service
+          After=network.target
+          
+          [Service]
+          User=deployer
+          Group=deployer
+          ExecStart=/usr/local/bin/${{ env.APP_NAME }}
+          Restart=always
+          RestartSec=3
+          # 阿里云CentOS 8适配：关闭所有systemd隔离（避免权限拦截）
+          ProtectHome=false
+          ProtectSystem=false
+          PrivateTmp=false
+          # 日志路径
+          StandardOutput=append:/home/deployer/log/${{ env.APP_NAME }}.log
+          StandardError=append:/home/deployer/log/${{ env.APP_NAME }}.log
+          WorkingDirectory=/home/deployer
+          
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE_EOF
+            # ========== 阿里云 CentOS 8 SELinux 修复核心 end ==========
+          
+            # 重载配置+启动服务
+            sudo systemctl daemon-reload
+            sudo mv /tmp/${{ env.APP_NAME }} /usr/local/bin/
+            sudo chmod +x /usr/local/bin/${{ env.APP_NAME }}
+            sudo systemctl start ${{ env.APP_NAME }}
+            sudo systemctl enable ${{ env.APP_NAME }}
+          
+            echo "✅ 阿里云 CentOS 8 部署完成"
+          EOF
+      # 8. 验证部署（CentOS 8 适配）
+      - name: Verify deployment
+        run: |
+          echo "🔍 验证CentOS 8部署..."
+          sleep 5
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "
+            # 验证SELinux上下文
+            ls -Z /home/deployer/log | grep var_log_t
+            # 验证文件属主
+            ls -l /home/deployer/log/${{ env.APP_NAME }}.log | grep deployer
+            # 验证服务状态
+            systemctl is-active ${{ env.APP_NAME }}
+            # 验证端口监听
+            ss -tlnp | grep :${{ env.APP_PORT }}  # CentOS 8 推荐用ss替代netstat
+          "
+          echo "✅ CentOS 8 验证通过"

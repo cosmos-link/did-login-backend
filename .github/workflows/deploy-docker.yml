@@ -1,0 +1,275 @@
+name: Deploy to Private Server (Docker)
+
+on:
+  push:
+    branches: [main, master]
+
+# 仅保留无法从配置文件读取的基础变量（服务器信息）
+env:
+  SERVER_HOST: ${{ vars.SERVER_HOST }}
+  SERVER_USER: ${{ vars.SERVER_USER }}
+  SERVER_PORT: ${{ vars.SERVER_PORT || '22' }}
+  CONTAINER_LOG_PATH: /var/log  # 容器内日志路径（固定值）
+
+jobs:
+  build-and-deploy-docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      # 核心简化：调用项目脚本读取配置（仅3行核心代码）
+      - name: 从配置文件读取应用配置
+        run: |
+          echo "🔍 从config.ini读取APP_NAME和APP_PORT..."
+          # 调用scripts/get_config.go读取配置，指定默认值
+          APP_NAME=$(go run scripts/get_config.go app name "go-webserver")
+          APP_PORT=$(go run scripts/get_config.go app port "8001")
+          # 写入环境变量
+          echo "APP_NAME=${APP_NAME}" >> $GITHUB_ENV
+          echo "APP_PORT=${APP_PORT}" >> $GITHUB_ENV
+          # 打印验证
+          echo "✅ 读取到配置：APP_NAME=${APP_NAME}, APP_PORT=${APP_PORT}"
+
+      # 原有步骤：设置Docker变量（逻辑不变）
+      - name: Set Docker variables
+        run: |
+          echo "DOCKER_IMAGE_NAME=${{ env.APP_NAME }}" >> $GITHUB_ENV
+          echo "DOCKER_CONTAINER_NAME=${{ env.APP_NAME }}-container" >> $GITHUB_ENV
+          echo "SERVER_LOG_DIR=/home/deployer/log/${{ env.APP_NAME }}" >> $GITHUB_ENV
+          echo "SERVER_VAR_LOG_DIR=/home/deployer/var_log/${{ env.APP_NAME }}" >> $GITHUB_ENV
+
+      # 验证Go应用依赖和构建
+      - name: Verify Go application
+        run: |
+          echo "🔍 验证Go应用源码..."
+          if [ ! -f "src/Go-WebServer-V1.1/main.go" ]; then
+            echo "❌ 错误: main.go 不存在"
+            exit 1
+          fi
+          if [ ! -f "src/Go-WebServer-V1.1/go.mod" ]; then
+            echo "❌ 错误: go.mod 不存在"
+            exit 1
+          fi
+          echo "✅ Go应用源码验证通过"
+
+      - name: Build and save Docker image
+        run: |
+          echo "🐳 构建 Docker 镜像（多阶段构建：Go + Nginx）..."
+          docker build \
+            -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            -t ${{ env.DOCKER_IMAGE_NAME }}:latest \
+            .
+          docker save -o ${{ env.DOCKER_IMAGE_NAME }}.tar ${{ env.DOCKER_IMAGE_NAME }}:latest
+          echo "✅ Docker镜像构建并保存完成"
+          echo "镜像包含："
+          echo "  - Go后端应用 (端口8080)"
+          echo "  - Nginx前端服务 (端口80)"
+          echo "  - 静态文件服务"
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy Docker files to server
+        run: |
+          echo "📤 传输Docker镜像到服务器..."
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p /tmp/deploy"
+          scp -P ${{ env.SERVER_PORT }} \
+            ${{ env.DOCKER_IMAGE_NAME }}.tar \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/tmp/deploy/
+
+      - name: Check port availability
+        run: |
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} '
+            echo "检查端口 ${{ env.APP_PORT }} 是否可用..."
+
+            # 强制清理旧容器（无论端口是否被占用）
+            echo "🔴 强制清理旧容器..."
+            OCCUPIED_CONTAINER=$(docker ps -q --filter "name=go-webserver")
+            if [ -n "$OCCUPIED_CONTAINER" ]; then
+              echo "发现旧容器，停止中..."
+              docker stop $OCCUPIED_CONTAINER 2>/dev/null || true
+              docker rm $OCCUPIED_CONTAINER 2>/dev/null || true
+              echo "✅ 旧容器已停止"
+              
+              # 等待端口释放
+              sleep 3
+            else
+              echo "✓ 没有旧容器"
+            fi
+
+            # 检查端口是否被占用
+            if ss -tlnp 2>/dev/null | grep -q ":${{ env.APP_PORT }}"; then
+              echo "⚠️ 端口仍被占用，查找占用进程..."
+              
+              # 查找所有占用该端口的进程（包括非Docker进程）
+              PORT_PIDS=$(ss -tlnp 2>/dev/null | grep ":${{ env.APP_PORT }}" | awk "{print \$2}")
+              
+              if [ -n "$PORT_PIDS" ]; then
+                echo "发现占用进程，尝试清理..."
+                # 优先清理Docker容器
+                for pid in $PORT_PIDS; do
+                  # 检查是否为Docker容器进程
+                  if docker ps -q --filter "id=$pid" > /dev/null 2>&1; then
+                    echo "停止Docker容器: $pid"
+                    docker stop $pid 2>/dev/null || true
+                    docker rm $(docker ps -q --filter "id=$pid" 2>/dev/null) 2>/dev/null || true
+                  else
+                    echo "终止非Docker进程: $pid"
+                    kill -9 $pid 2>/dev/null || true
+                  fi
+                done
+                
+                # 等待端口完全释放
+                sleep 5
+                
+                # 再次验证端口是否可用
+                if ss -tlnp 2>/dev/null | grep -q ":${{ env.APP_PORT }}"; then
+                  echo "❌ 端口仍被占用，请手动检查"
+                  ss -tlnp | grep ":${{ env.APP_PORT }}"
+                  exit 1
+                fi
+              else
+                echo "✅ 端口已释放"
+              fi
+            else
+              echo "✅ 端口可用"
+            fi
+
+            echo "✅ 端口检查完成"
+          '
+
+      - name: Deploy with Docker on private server
+        run: |
+          echo "🚀 在私链服务器执行Docker部署..."
+          # 提前赋值变量，避免SSH内转义混乱
+          DOCKER_CONTAINER_NAME="${{ env.DOCKER_CONTAINER_NAME }}"
+          APP_PORT="${{ env.APP_PORT }}"
+          SERVER_VAR_LOG_DIR="${{ env.SERVER_VAR_LOG_DIR }}"
+          SERVER_LOG_DIR="${{ env.SERVER_LOG_DIR }}"
+          DOCKER_IMAGE_NAME="${{ env.DOCKER_IMAGE_NAME }}"
+          SERVER_USER="${{ env.SERVER_USER }}"
+
+          ssh -tt -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            set -e
+            echo "=== 开始Docker部署（阿里云 CentOS 8） ==="
+            echo "时间: \$(date)"
+            echo "Commit: ${{ github.sha }}"
+            echo "配置来源：APP_NAME=${{ env.APP_NAME }}, APP_PORT=${APP_PORT}"
+
+            # 安装Docker（如果未安装）
+            if ! command -v docker &> /dev/null; then
+              echo "📦 安装Docker..."
+              sudo yum install -y yum-utils
+              sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+              sudo yum install -y docker-ce docker-ce-cli containerd.io
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo usermod -aG docker ${SERVER_USER}
+              newgrp docker
+            fi
+
+            # 创建日志目录
+            sudo mkdir -p ${SERVER_LOG_DIR}
+            sudo mkdir -p ${SERVER_VAR_LOG_DIR}
+            sudo chown -R ${SERVER_USER}:${SERVER_USER} ${SERVER_LOG_DIR}
+            sudo chown -R ${SERVER_USER}:${SERVER_USER} ${SERVER_VAR_LOG_DIR}
+            sudo setenforce 0 2>/dev/null || true
+            sudo restorecon -RvFi ${SERVER_LOG_DIR} 2>/dev/null || true
+            sudo restorecon -RvFi ${SERVER_VAR_LOG_DIR} 2>/dev/null || true
+            sudo chcon -R -t var_log_t ${SERVER_LOG_DIR} 2>/dev/null || true
+            sudo chcon -R -t var_log_t ${SERVER_VAR_LOG_DIR} 2>/dev/null || true
+
+            # 停止并删除旧容器
+            echo "🔴 停止旧容器..."
+            docker stop ${DOCKER_CONTAINER_NAME} 2>/dev/null || true
+            docker rm ${DOCKER_CONTAINER_NAME} 2>/dev/null || true
+
+            # 加载新镜像
+            echo "📥 加载Docker镜像..."
+            docker load -i /tmp/deploy/${DOCKER_IMAGE_NAME}.tar
+
+            # 启动新容器
+            echo "🟢 启动Docker容器..."
+            docker run -d --name ${DOCKER_CONTAINER_NAME} --restart always \
+              -p ${APP_PORT}:60208 \
+              -e CORS_ALLOWED_ORIGINS=http://digital.yukutong.xyz:50107,https://digital.yukutong.xyz \
+              -e CORS_ALLOW_CREDENTIALS=true \
+              -e CORS_ALLOWED_METHODS=POST,OPTIONS,GET,PUT,DELETE \
+              -e CORS_ALLOWED_HEADERS=Content-Type,Content-Length,Accept-Encoding,Authorization,accept,origin,Cache-Control,X-Requested-With \
+              -e CORS_MAX_AGE=86400 \
+              -e DB_HOST=47.84.96.59 \
+              -e DB_PORT=3308 \
+              -e DB_NAME=ykt_db \
+              -e DB_USER=root \
+              -e DB_PASSWORD=ykt123456 \
+              -e REDIS_HOST=47.84.96.59 \
+              -e REDIS_PORT=6379 \
+              -e REDIS_PASSWORD=123456 \
+              ${DOCKER_IMAGE_NAME}:latest
+
+            # 清理临时文件
+            rm -rf /tmp/deploy/${DOCKER_IMAGE_NAME}.tar
+
+            echo "✅ 阿里云 CentOS 8 Docker部署完成"
+            exit
+          EOF
+
+      - name: Verify deployment
+        run: |
+          echo "🔍 验证Docker容器部署..."
+          sleep 10  # 等待Nginx容器启动
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "
+            set -e
+            echo '===== 1. 验证容器是否运行 ====='
+            CONTAINER_STATUS=\$(docker inspect -f '{{.State.Status}}' ${{ env.DOCKER_CONTAINER_NAME }} 2>/dev/null || echo 'exited')
+            if [ \"\$CONTAINER_STATUS\" = \"restarting\" ]; then
+              echo '❌ 容器处于重启循环状态！'
+              docker logs ${{ env.DOCKER_CONTAINER_NAME }} --tail 30
+              exit 1
+            elif [ \"\$CONTAINER_STATUS\" != \"running\" ]; then
+              echo '❌ 容器未运行，状态：'\$CONTAINER_STATUS
+              docker logs ${{ env.DOCKER_CONTAINER_NAME }}
+              exit 1
+            fi
+            echo '✅ 容器运行状态正常'
+
+            echo -e '\n===== 2. 验证端口是否监听 ====='
+            PORT_LISTEN=\$(ss -tlnp 2>/dev/null | grep -E \":${{ env.APP_PORT }}\b\" | wc -l)
+            if [ \$PORT_LISTEN -eq 0 ]; then
+              echo '❌ 端口${{ env.APP_PORT }}未监听'
+              ss -tlnp | grep -E 'docker|${{ env.APP_PORT }}'
+              exit 1
+            fi
+            echo '✅ 端口${{ env.APP_PORT }}监听正常'
+
+            echo -e '\n===== 3. 验证HTTP可访问 ====='
+            HTTP_CODE=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${{ env.APP_PORT }}/ || echo '000')
+            if [ \"\$HTTP_CODE\" != '200' ] && [ \"\$HTTP_CODE\" != '000' ]; then
+              echo '⚠️ HTTP返回码：'\$HTTP_CODE
+            elif [ \"\$HTTP_CODE\" = '000' ]; then
+              echo '❌ HTTP无法访问'
+              exit 1
+            else
+              echo '✅ HTTP访问正常 (200 OK)'
+            fi
+
+            echo -e '\n===== 4. 验证容器日志 ====='
+            if docker logs ${{ env.DOCKER_CONTAINER_NAME }} 2>&1 | grep -i 'error\|panic\|fatal'; then
+              echo '⚠️ 容器日志中发现错误：'
+              docker logs ${{ env.DOCKER_CONTAINER_NAME }} 2>&1 | grep -i 'error\|panic\|fatal' | head -10
+            else
+              echo '✅ 容器日志无明显错误'
+            fi
+          "
+          echo "✅ Docker部署验证通过"

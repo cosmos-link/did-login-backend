@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -199,6 +200,74 @@ func extractRpIdFromOrigin(origin string) string {
 	return origin
 }
 
+// safeMigrate 安全的数据库迁移函数
+func safeMigrate(db *gorm.DB) error {
+	// 要迁移的模型列表
+	models := []interface{}{&User{}, &Application{}, &AppPermission{}}
+	
+	for _, model := range models {
+		// 获取表名
+		typeName := fmt.Sprintf("%T", model)
+		var tableName string
+		switch typeName {
+		case "*main.User":
+			tableName = "users"
+		case "*main.Application":
+			tableName = "applications"
+		case "*main.AppPermission":
+			tableName = "app_permissions"
+		default:
+			tableName = "unknown"
+		}
+		
+		fmt.Printf("Migrating table: %s\n", tableName)
+		
+		// 检查表是否存在
+		var count int64
+		err := db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", tableName).Scan(&count).Error
+		
+		if err != nil {
+			// 如果查询出错（可能是权限问题），直接尝试迁移
+			fmt.Printf("Warning: Failed to check table existence for %s: %v, attempting migration anyway\n", tableName, err)
+			if err := db.AutoMigrate(model); err != nil {
+				return fmt.Errorf("failed to migrate %s: %v", tableName, err)
+			}
+			continue
+		}
+		
+		if count > 0 {
+			// 表已存在，检查是否有主键冲突
+			fmt.Printf("Table %s already exists, checking for primary key conflicts\n", tableName)
+			
+			// 对于已存在的表，尝试删除可能存在的主键约束（避免 Multiple primary key defined 错误）
+			// 注意：这仅在开发环境使用，生产环境需要更谨慎的处理
+			if tableName == "applications" {
+				// 检查是否存在主键约束
+				var pkCount int64
+				err := db.Raw("SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = ? AND constraint_type = 'PRIMARY KEY'", tableName).Scan(&pkCount).Error
+				if err == nil && pkCount > 0 {
+					fmt.Printf("Found existing primary key on %s, skipping AutoMigrate to avoid conflict\n", tableName)
+					continue
+				}
+			}
+		}
+		
+		// 执行迁移
+		if err := db.AutoMigrate(model); err != nil {
+			// 如果是主键冲突错误，记录警告但继续
+			if strings.Contains(err.Error(), "Multiple primary key") || strings.Contains(err.Error(), "1068") {
+				fmt.Printf("Warning: Primary key conflict on %s (table may already have correct structure): %v\n", tableName, err)
+				continue
+			}
+			return fmt.Errorf("failed to migrate %s: %v", tableName, err)
+		}
+		
+		fmt.Printf("✅ Successfully migrated %s\n", tableName)
+	}
+	
+	return nil
+}
+
 func initDB() {
 	// 从环境变量读取数据库配置
 	dbHost := os.Getenv("DB_HOST")
@@ -237,11 +306,14 @@ func initDB() {
 		panic(fmt.Sprintf("failed to connect database: %v", err))
 	}
 	
-	// 自动迁移
-	db.AutoMigrate(&User{}, &Application{}, &AppPermission{})
-	DB = db
+	// 安全的数据库迁移
+	fmt.Println("Starting database migration...")
+	if err := safeMigrate(db); err != nil {
+		panic(fmt.Sprintf("failed to migrate database: %v", err))
+	}
 	
-	fmt.Println("✅ Database connected successfully")
+	DB = db
+	fmt.Println("✅ Database migration completed")
 	
 	// 初始化示例数据
 	initSeedData(db)
@@ -249,6 +321,14 @@ func initDB() {
 
 // 初始化示例数据
 func initSeedData(db *gorm.DB) {
+	// 检查 applications 表是否存在
+	var count int64
+	err := db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", "applications").Scan(&count).Error
+	if err != nil || count == 0 {
+		fmt.Println("Applications table not ready, skipping seed data initialization")
+		return
+	}
+	
 	// 检查是否已经有数据
 	var appCount int64
 	db.Model(&Application{}).Count(&appCount)

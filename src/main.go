@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -199,14 +200,48 @@ func extractRpIdFromOrigin(origin string) string {
 }
 
 func initDB() {
-	dsn := "root:password123@tcp(db:3306)/portal?charset=utf8mb4&parseTime=True&loc=Local"
+	// 从环境变量读取数据库配置
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "47.84.96.59" // 默认阿里云MySQL地址
+	}
+	
+	dbPort := os.Getenv("DB_PORT")
+	if dbPort == "" {
+		dbPort = "3308" // 默认端口
+	}
+	
+	dbUser := os.Getenv("DB_USER")
+	if dbUser == "" {
+		dbUser = "root"
+	}
+	
+	dbPassword := os.Getenv("DB_PASSWORD")
+	if dbPassword == "" {
+		dbPassword = "ykt123456" // 默认密码
+	}
+	
+	dbName := os.Getenv("DB_NAME")
+	if dbName == "" {
+		dbName = "ykt_db"
+	}
+	
+	// 构建DSN连接字符串
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		dbUser, dbPassword, dbHost, dbPort, dbName)
+	
+	fmt.Printf("Connecting to database: %s@%s:%s/%s\n", dbUser, dbHost, dbPort, dbName)
+	
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-		panic("failed to connect database")
+		panic(fmt.Sprintf("failed to connect database: %v", err))
 	}
+	
 	// 自动迁移
 	db.AutoMigrate(&User{}, &Application{}, &AppPermission{})
 	DB = db
+	
+	fmt.Println("✅ Database connected successfully")
 	
 	// 初始化示例数据
 	initSeedData(db)

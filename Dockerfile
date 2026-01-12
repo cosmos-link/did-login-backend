@@ -1,5 +1,7 @@
 FROM golang:latest
 
+ARG APP_PORT=0
+
 WORKDIR /app
 
 # 设置数据库环境变量（默认值）
@@ -23,5 +25,6 @@ COPY src/ ./
 # 编译应用
 RUN go build -o main .
 
-EXPOSE 8080
+EXPOSE ${APP_PORT}
+
 CMD ["./main"]

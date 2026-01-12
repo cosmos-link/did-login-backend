@@ -51,7 +51,7 @@ func verifyRegistration(clientDataJSON, attestationObject string, expectedChalle
 	case 3:
 		decodedStr += "="
 	}
-	
+
 	clientDataBytes, err := base64.URLEncoding.DecodeString(decodedStr)
 	if err != nil {
 		// 如果URLEncoding失败，尝试StdEncoding
@@ -105,7 +105,7 @@ func verifyAuthentication(clientDataJSON, authenticatorData, signature string, e
 	case 3:
 		decodedStr += "="
 	}
-	
+
 	clientDataBytes, err := base64.URLEncoding.DecodeString(decodedStr)
 	if err != nil {
 		// 如果URLEncoding失败，尝试StdEncoding
@@ -156,11 +156,11 @@ func verifyAuthentication(clientDataJSON, authenticatorData, signature string, e
 
 	// 动态验证RP ID Hash - 支持localhost和生产环境
 	rpIdHash := authDataBytes[0:32]
-	
+
 	// 从Origin提取RP ID
 	rpId := extractRpIdFromOrigin(clientData.Origin)
 	expectedRpIdHash := sha256.Sum256([]byte(rpId))
-	
+
 	// 比较RP ID Hash
 	for i := 0; i < 32; i++ {
 		if rpIdHash[i] != expectedRpIdHash[i] {
@@ -185,17 +185,17 @@ func extractRpIdFromOrigin(origin string) string {
 	} else if strings.HasPrefix(origin, "http://") {
 		origin = origin[7:]
 	}
-	
+
 	// 移除端口号
 	if strings.Contains(origin, ":") {
 		origin = strings.Split(origin, ":")[0]
 	}
-	
+
 	// 移除路径
 	if strings.Contains(origin, "/") {
 		origin = strings.Split(origin, "/")[0]
 	}
-	
+
 	return origin
 }
 
@@ -203,7 +203,7 @@ func extractRpIdFromOrigin(origin string) string {
 func safeMigrate(db *gorm.DB) error {
 	// 要迁移的模型列表
 	models := []interface{}{&User{}, &Application{}, &AppPermission{}}
-	
+
 	for _, model := range models {
 		// 获取表名
 		typeName := fmt.Sprintf("%T", model)
@@ -218,13 +218,13 @@ func safeMigrate(db *gorm.DB) error {
 		default:
 			tableName = "unknown"
 		}
-		
+
 		fmt.Printf("Migrating table: %s\n", tableName)
-		
+
 		// 检查表是否存在
 		var count int64
 		err := db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", tableName).Scan(&count).Error
-		
+
 		if err != nil {
 			// 如果查询出错（可能是权限问题），直接尝试迁移
 			fmt.Printf("Warning: Failed to check table existence for %s: %v, attempting migration anyway\n", tableName, err)
@@ -233,11 +233,11 @@ func safeMigrate(db *gorm.DB) error {
 			}
 			continue
 		}
-		
+
 		if count > 0 {
 			// 表已存在，检查是否有主键冲突
 			fmt.Printf("Table %s already exists, checking for primary key conflicts\n", tableName)
-			
+
 			// 对于已存在的表，尝试删除可能存在的主键约束（避免 Multiple primary key defined 错误）
 			// 注意：这仅在开发环境使用，生产环境需要更谨慎的处理
 			if tableName == "applications" {
@@ -250,7 +250,7 @@ func safeMigrate(db *gorm.DB) error {
 				}
 			}
 		}
-		
+
 		// 执行迁移
 		if err := db.AutoMigrate(model); err != nil {
 			// 如果是主键冲突错误，记录警告但继续
@@ -260,10 +260,10 @@ func safeMigrate(db *gorm.DB) error {
 			}
 			return fmt.Errorf("failed to migrate %s: %v", tableName, err)
 		}
-		
+
 		fmt.Printf("✅ Successfully migrated %s\n", tableName)
 	}
-	
+
 	return nil
 }
 
@@ -273,47 +273,47 @@ func initDB() {
 	if dbHost == "" {
 		dbHost = "47.84.96.59" // 默认阿里云MySQL地址
 	}
-	
+
 	dbPort := os.Getenv("DB_PORT")
 	if dbPort == "" {
 		dbPort = "3308" // 默认端口
 	}
-	
+
 	dbUser := os.Getenv("DB_USER")
 	if dbUser == "" {
 		dbUser = "root"
 	}
-	
+
 	dbPassword := os.Getenv("DB_PASSWORD")
 	if dbPassword == "" {
 		dbPassword = "ykt123456" // 默认密码
 	}
-	
+
 	dbName := os.Getenv("DB_NAME")
 	if dbName == "" {
 		dbName = "ykt_db"
 	}
-	
+
 	// 构建DSN连接字符串
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		dbUser, dbPassword, dbHost, dbPort, dbName)
-	
+
 	fmt.Printf("Connecting to database: %s@%s:%s/%s\n", dbUser, dbHost, dbPort, dbName)
-	
+
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		panic(fmt.Sprintf("failed to connect database: %v", err))
 	}
-	
+
 	// 安全的数据库迁移
 	fmt.Println("Starting database migration...")
 	if err := safeMigrate(db); err != nil {
 		panic(fmt.Sprintf("failed to migrate database: %v", err))
 	}
-	
+
 	DB = db
 	fmt.Println("✅ Database migration completed")
-	
+
 	// 初始化示例数据
 	initSeedData(db)
 }
@@ -327,7 +327,7 @@ func initSeedData(db *gorm.DB) {
 		fmt.Println("Applications table not ready, skipping seed data initialization")
 		return
 	}
-	
+
 	// 检查是否已经有数据
 	var appCount int64
 	db.Model(&Application{}).Count(&appCount)
@@ -335,11 +335,11 @@ func initSeedData(db *gorm.DB) {
 		fmt.Println("数据库已有数据，跳过初始化")
 		return
 	}
-	
+
 	// 等待服务器启动完成
 	go func() {
 		time.Sleep(3 * time.Second) // 等待3秒确保服务器完全启动
-		
+
 		// 调用API创建示例应用
 		appsData := []map[string]interface{}{
 			{
@@ -391,14 +391,14 @@ func initSeedData(db *gorm.DB) {
 				"user_types":     []string{"机构", "政府"},
 			},
 		}
-		
+
 		createdCount := 0
 		for _, appData := range appsData {
 			if createAppViaAPI(appData) {
 				createdCount++
 			}
 		}
-		
+
 		fmt.Printf("✓ 通过API创建了 %d 个示例应用\n", createdCount)
 	}()
 }
@@ -406,14 +406,14 @@ func initSeedData(db *gorm.DB) {
 // 通过API创建应用
 func createAppViaAPI(appData map[string]interface{}) bool {
 	jsonData, _ := json.Marshal(appData)
-	
-	resp, err := http.Post("http://localhost:8080/api/apps", "application/json", strings.NewReader(string(jsonData)))
+
+	resp, err := http.Post("http://localhost:60208/api/apps", "application/json", strings.NewReader(string(jsonData)))
 	if err != nil {
 		fmt.Printf("创建应用失败 %s: %v\n", appData["name"], err)
 		return false
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode == 200 {
 		fmt.Printf("✓ 成功创建应用: %s\n", appData["name"])
 		return true
@@ -446,12 +446,12 @@ func main() {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization")
-		
+
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
 		}
-		
+
 		c.Next()
 	})
 
@@ -475,7 +475,7 @@ func main() {
 			PasswordHash: string(hash),
 			UserType:     input.UserType,
 		}
-		
+
 		if err := DB.Create(&user).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "注册失败"})
 			return
@@ -557,7 +557,7 @@ func main() {
 		// 真正的WebAuthn验证
 		clientDataJSON := input.Credential["response"].(map[string]interface{})["clientDataJSON"].(string)
 		attestationObject := input.Credential["response"].(map[string]interface{})["attestationObject"].(string)
-		
+
 		if err := verifyRegistration(clientDataJSON, attestationObject, expectedChallenge); err != nil {
 			fmt.Printf("WebAuthn注册验证失败: %v\n", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "验证失败: " + err.Error()})
@@ -567,7 +567,7 @@ func main() {
 		fmt.Printf("WebAuthn注册验证成功\n")
 
 		credentialId := input.Credential["id"].(string)
-		
+
 		// 更新用户的WebAuthn信息
 		var user User
 		if err := DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
@@ -686,14 +686,14 @@ func main() {
 			Email      string `json:"email"`
 			Credential gin.H  `json:"credential"`
 		}
-		
+
 		if err := c.ShouldBindJSON(&input); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		
+
 		fmt.Printf("WebAuthn验证请求: Email=%s\n", input.Email)
-		
+
 		// 验证挑战
 		expectedChallenge, exists := challenges[input.Email]
 		if !exists {
@@ -701,12 +701,12 @@ func main() {
 			return
 		}
 		delete(challenges, input.Email)
-		
+
 		// 真正的WebAuthn验证
 		clientDataJSON := input.Credential["response"].(map[string]interface{})["clientDataJSON"].(string)
 		authenticatorData := input.Credential["response"].(map[string]interface{})["authenticatorData"].(string)
 		signature := input.Credential["response"].(map[string]interface{})["signature"].(string)
-		
+
 		if err := verifyAuthentication(clientDataJSON, authenticatorData, signature, expectedChallenge); err != nil {
 			fmt.Printf("WebAuthn认证验证失败: %v\n", err)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "验证失败: " + err.Error()})
@@ -714,7 +714,7 @@ func main() {
 		}
 
 		fmt.Printf("WebAuthn认证验证成功\n")
-		
+
 		var user User
 		if err := DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
@@ -723,9 +723,9 @@ func main() {
 
 		token, _ := generateToken(user.DID, user.UserType)
 		c.JSON(http.StatusOK, gin.H{
-			"token": token, 
+			"token":     token,
 			"user_type": user.UserType,
-			"did": user.DID,
+			"did":       user.DID,
 		})
 	})
 
@@ -737,14 +737,14 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "user_type 参数缺失"})
 			return
 		}
-		
+
 		var apps []Application
 		err := DB.Table("applications").
 			Select("applications.*").
 			Joins("JOIN app_permissions ON app_permissions.app_id = applications.app_id").
 			Where("app_permissions.user_type = ?", userType).
 			Find(&apps).Error
-		
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
 			return
@@ -776,7 +776,7 @@ func main() {
 			BaseURL:       input.BaseURL,
 			Description:   input.Description,
 		}
-		
+
 		if err := DB.Create(&app).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建应用失败"})
 			return
@@ -804,13 +804,13 @@ func main() {
 	// 4.2. 删除 App
 	r.DELETE("/api/apps/:id", func(c *gin.Context) {
 		appID := c.Param("id")
-		
+
 		// 先删除相关权限
 		if err := DB.Where("app_id = ?", appID).Delete(&AppPermission{}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除应用权限失败"})
 			return
 		}
-		
+
 		// 删除应用
 		if err := DB.Where("app_id = ?", appID).Delete(&Application{}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除应用失败"})
@@ -881,5 +881,5 @@ func main() {
 		})
 	})
 
-	r.Run(":8080")
+	r.Run(":60208")
 }

@@ -80,13 +80,13 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
-#      - name: Copy Docker files to server
-#        run: |
-#          echo "📤 传输Docker镜像到服务器..."
-#          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p /tmp/deploy"
-#          scp -P ${{ env.SERVER_PORT }} \
-#            ${{ env.DOCKER_IMAGE_NAME }}.tar \
-#            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/tmp/deploy/
+      - name: Copy Docker files to server
+        run: |
+          echo "📤 传输Docker镜像到服务器..."
+          ssh -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p /tmp/deploy"
+          scp -P ${{ env.SERVER_PORT }} \
+            ${{ env.DOCKER_IMAGE_NAME }}.tar \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/tmp/deploy/
 
       - name: Check port availability
         run: |

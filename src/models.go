@@ -22,7 +22,7 @@ type User struct {
 
 // TableName 指定表名
 func (User) TableName() string {
-	return "users"
+	return "ykt_users"
 }
 
 // Application App信息表
@@ -39,7 +39,7 @@ type Application struct {
 
 // TableName 指定表名
 func (Application) TableName() string {
-	return "applications"
+	return "ykt_applications"
 }
 
 // AppPermission 权限映射表
@@ -52,5 +52,5 @@ type AppPermission struct {
 
 // TableName 指定表名
 func (AppPermission) TableName() string {
-	return "app_permissions"
+	return "ykt_app_permissions"
 }

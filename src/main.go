@@ -41,7 +41,7 @@ func generateChallenge() string {
 }
 
 // 验证WebAuthn注册
-func verifyRegistration(clientDataJSON, attestationObject string, expectedChallenge string) error {
+func verifyRegistration(clientDataJSON, attestationObject string, expectedChallenge string) ([]byte, error) {
 	// 解析clientDataJSON - 处理base64url格式（可能缺少padding）
 	// 添加padding以确保能正确解码
 	decodedStr := clientDataJSON
@@ -57,7 +57,7 @@ func verifyRegistration(clientDataJSON, attestationObject string, expectedChalle
 		// 如果URLEncoding失败，尝试StdEncoding
 		clientDataBytes, err = base64.StdEncoding.DecodeString(decodedStr)
 		if err != nil {
-			return fmt.Errorf("解析clientDataJSON失败: %v", err)
+			return nil, fmt.Errorf("解析clientDataJSON失败: %v", err)
 		}
 	}
 
@@ -68,31 +68,54 @@ func verifyRegistration(clientDataJSON, attestationObject string, expectedChalle
 	}
 
 	if err := json.Unmarshal(clientDataBytes, &clientData); err != nil {
-		return fmt.Errorf("解析clientData失败: %v", err)
+		return nil, fmt.Errorf("解析clientData失败: %v", err)
 	}
 
 	// 验证类型
 	if clientData.Type != "webauthn.create" {
-		return fmt.Errorf("无效的类型: %s", clientData.Type)
+		return nil, fmt.Errorf("无效的类型: %s", clientData.Type)
 	}
 
 	// 验证挑战
 	if clientData.Challenge != expectedChallenge {
 		fmt.Printf("【注册】Challenge不匹配! 从clientData获得: %s (长度%d), 预期: %s (长度%d)\n", clientData.Challenge, len(clientData.Challenge), expectedChallenge, len(expectedChallenge))
-		return fmt.Errorf("挑战不匹配")
+		return nil, fmt.Errorf("挑战不匹配")
 	}
 	fmt.Printf("【注册】Challenge验证成功 ✓\n")
 
 	// 验证来源 - 支持localhost和生产环境
 	if clientData.Origin == "" {
-		return fmt.Errorf("来源不能为空")
+		return nil, fmt.Errorf("来源不能为空")
 	}
 	// 基本的来源格式验证，允许http/https协议
 	if !strings.HasPrefix(clientData.Origin, "http://") && !strings.HasPrefix(clientData.Origin, "https://") {
-		return fmt.Errorf("无效的来源协议: %s", clientData.Origin)
+		return nil, fmt.Errorf("无效的来源协议: %s", clientData.Origin)
 	}
 
-	return nil
+	// 解析 attestationObject 提取公钥（简化处理）
+	// 实际生产环境应该完整解析 CBOR 格式
+	// 这里我们返回原始的 attestationObject 作为公钥存储
+	
+	// 处理 base64url padding
+	attestationStr := attestationObject
+	switch len(attestationObject) % 4 {
+	case 2:
+		attestationStr += "=="
+	case 3:
+		attestationStr += "="
+	}
+	
+	attestationBytes, err := base64.URLEncoding.DecodeString(attestationStr)
+	if err != nil {
+		// 尝试 StdEncoding
+		attestationBytes, err = base64.StdEncoding.DecodeString(attestationStr)
+		if err != nil {
+			return nil, fmt.Errorf("解析attestationObject失败: %v", err)
+		}
+	}
+	
+	fmt.Printf("【注册】成功提取公钥信息 (长度: %d bytes) ✓\n", len(attestationBytes))
+	return attestationBytes, nil
 }
 
 // 验证WebAuthn认证
@@ -144,10 +167,22 @@ func verifyAuthentication(clientDataJSON, authenticatorData, signature string, e
 		return fmt.Errorf("无效的来源协议: %s", clientData.Origin)
 	}
 
-	// 验证authenticatorData
-	authDataBytes, err := base64.URLEncoding.DecodeString(authenticatorData)
+	// 验证authenticatorData - 处理 base64url padding
+	authDataStr := authenticatorData
+	switch len(authenticatorData) % 4 {
+	case 2:
+		authDataStr += "=="
+	case 3:
+		authDataStr += "="
+	}
+	
+	authDataBytes, err := base64.URLEncoding.DecodeString(authDataStr)
 	if err != nil {
-		return fmt.Errorf("解析authenticatorData失败: %v", err)
+		// 尝试 StdEncoding
+		authDataBytes, err = base64.StdEncoding.DecodeString(authDataStr)
+		if err != nil {
+			return fmt.Errorf("解析authenticatorData失败: %v", err)
+		}
 	}
 
 	if len(authDataBytes) < 37 {
@@ -558,7 +593,8 @@ func main() {
 		clientDataJSON := input.Credential["response"].(map[string]interface{})["clientDataJSON"].(string)
 		attestationObject := input.Credential["response"].(map[string]interface{})["attestationObject"].(string)
 
-		if err := verifyRegistration(clientDataJSON, attestationObject, expectedChallenge); err != nil {
+		publicKey, err := verifyRegistration(clientDataJSON, attestationObject, expectedChallenge)
+		if err != nil {
 			fmt.Printf("WebAuthn注册验证失败: %v\n", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "验证失败: " + err.Error()})
 			return
@@ -575,9 +611,10 @@ func main() {
 			return
 		}
 
-		// 存储凭证ID (简化处理)
-		credIdBytes, _ := base64.URLEncoding.DecodeString(credentialId)
-		user.CredentialID = credIdBytes
+		// 存储凭证ID（直接保存原始base64url字符串）和公钥
+		user.CredentialID = []byte(credentialId)
+		user.PublicKey = publicKey
+		fmt.Printf("【注册】保存凭证 - CredentialID: %s (长度: %d), PublicKey长度: %d\n", credentialId, len(credentialId), len(publicKey))
 		DB.Save(&user)
 
 		c.JSON(http.StatusOK, gin.H{"verified": true})
@@ -670,8 +707,9 @@ func main() {
 			"rpId":      rpId,
 			"allowCredentials": []gin.H{
 				{
-					"type": "public-key",
-					"id":   base64.URLEncoding.EncodeToString(user.CredentialID),
+					"type":       "public-key",
+					"id":         string(user.CredentialID),  // 直接使用保存的base64url字符串
+					"transports": []string{"internal"},
 				},
 			},
 			"userVerification": "required",

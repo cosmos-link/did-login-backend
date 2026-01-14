@@ -375,56 +375,11 @@ func initSeedData(db *gorm.DB) {
 	go func() {
 		time.Sleep(3 * time.Second) // 等待3秒确保服务器完全启动
 
-		// 调用API创建示例应用
-		appsData := []map[string]interface{}{
-			{
-				"name":           "用户管理系统",
-				"container_name": "user-management",
-				"port":           3002,
-				"base_url":       "http://localhost",
-				"description":    "管理企业和个人用户",
-				"user_types":     []string{"企业", "个人", "社区", "政府"},
-			},
-			{
-				"name":           "数据分析平台",
-				"container_name": "data-analytics",
-				"port":           3003,
-				"base_url":       "http://localhost",
-				"description":    "数据可视化和分析工具",
-				"user_types":     []string{"企业", "机构", "政府"},
-			},
-			{
-				"name":           "文档管理中心",
-				"container_name": "doc-center",
-				"port":           3004,
-				"base_url":       "http://localhost",
-				"description":    "企业文档存储和共享",
-				"user_types":     []string{"企业", "机构", "政府"},
-			},
-			{
-				"name":           "社区论坛",
-				"container_name": "community-forum",
-				"port":           3005,
-				"base_url":       "http://localhost",
-				"description":    "社区成员交流平台",
-				"user_types":     []string{"个人", "社区", "政府"},
-			},
-			{
-				"name":           "政务服务大厅",
-				"container_name": "gov-services",
-				"port":           3006,
-				"base_url":       "http://localhost",
-				"description":    "政府服务在线办理",
-				"user_types":     []string{"政府"},
-			},
-			{
-				"name":           "机构认证中心",
-				"container_name": "org-auth",
-				"port":           3007,
-				"base_url":       "http://localhost",
-				"description":    "机构资质认证",
-				"user_types":     []string{"机构", "政府"},
-			},
+		// 从JSON文件读取app配置
+		appsData := loadAppsFromJSON()
+		if len(appsData) == 0 {
+			fmt.Println("未能加载应用配置")
+			return
 		}
 
 		createdCount := 0
@@ -434,8 +389,81 @@ func initSeedData(db *gorm.DB) {
 			}
 		}
 
-		fmt.Printf("✓ 通过API创建了 %d 个示例应用\n", createdCount)
+		fmt.Printf("✓ 通过API创建了 %d 个应用\n", createdCount)
 	}()
+}
+
+// loadAppsFromJSON 从JSON文件加载应用配置并转换为API可用的格式
+func loadAppsFromJSON() []map[string]interface{} {
+	// 读取JSON文件
+	jsonFile, err := os.Open("apps_config.json")
+	if err != nil {
+		// 尝试从src目录读取
+		jsonFile, err = os.Open("./src/apps_config.json")
+		if err != nil {
+			fmt.Printf("无法打开apps_config.json文件: %v\n", err)
+			return []map[string]interface{}{}
+		}
+	}
+	defer jsonFile.Close()
+
+	var config struct {
+		UserTypes []struct {
+			Type        string `json:"type"`
+			DisplayName string `json:"displayName"`
+			Apps        []struct {
+				Name string `json:"name"`
+				Port int    `json:"port"`
+			} `json:"apps"`
+		} `json:"userTypes"`
+	}
+
+	decoder := json.NewDecoder(jsonFile)
+	if err := decoder.Decode(&config); err != nil {
+		fmt.Printf("解析JSON文件失败: %v\n", err)
+		return []map[string]interface{}{}
+	}
+
+	// 获取所有用户类型列表
+	allUserTypes := []string{}
+	for _, userType := range config.UserTypes {
+		allUserTypes = append(allUserTypes, userType.Type)
+	}
+
+	// 转换为API格式
+	var appsData []map[string]interface{}
+	
+	for _, userType := range config.UserTypes {
+		for idx, app := range userType.Apps {
+			// 创建唯一的容器名称
+			containerName := fmt.Sprintf("%s-app-%d", userType.Type, idx+1)
+			containerName = strings.ReplaceAll(containerName, " ", "-")
+			containerName = strings.ToLower(containerName)
+
+			// 确定该应用的可见用户类型
+			var userTypes []string
+			if userType.Type == "个人" {
+				// 个人类型的应用对所有用户类型可见
+				userTypes = allUserTypes
+			} else {
+				// 其他类型的应用只对特定类型可见
+				userTypes = []string{userType.Type}
+			}
+
+			appData := map[string]interface{}{
+				"name":           app.Name,
+				"container_name": containerName,
+				"port":           app.Port,
+				"base_url":       "http://localhost",
+				"description":    fmt.Sprintf("%s - %s", userType.DisplayName, app.Name),
+				"user_types":     userTypes,
+			}
+			appsData = append(appsData, appData)
+		}
+	}
+
+	fmt.Printf("✓ 从apps_config.json加载了 %d 个应用配置\n", len(appsData))
+	return appsData
 }
 
 // 通过API创建应用

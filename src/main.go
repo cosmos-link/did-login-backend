@@ -245,11 +245,11 @@ func safeMigrate(db *gorm.DB) error {
 		var tableName string
 		switch typeName {
 		case "*main.User":
-			tableName = "users"
+			tableName = "ykt_users"
 		case "*main.Application":
-			tableName = "applications"
+			tableName = "ykt_applications"
 		case "*main.AppPermission":
-			tableName = "app_permissions"
+			tableName = "ykt_app_permissions"
 		default:
 			tableName = "unknown"
 		}
@@ -275,7 +275,7 @@ func safeMigrate(db *gorm.DB) error {
 
 			// 对于已存在的表，尝试删除可能存在的主键约束（避免 Multiple primary key defined 错误）
 			// 注意：这仅在开发环境使用，生产环境需要更谨慎的处理
-			if tableName == "applications" {
+			if tableName == "ykt_applications" {
 				// 检查是否存在主键约束
 				var pkCount int64
 				err := db.Raw("SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = ? AND constraint_type = 'PRIMARY KEY'", tableName).Scan(&pkCount).Error
@@ -355,9 +355,9 @@ func initDB() {
 
 // 初始化示例数据
 func initSeedData(db *gorm.DB) {
-	// 检查 applications 表是否存在
+	// 检查 ykt_applications 表是否存在
 	var count int64
-	err := db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", "applications").Scan(&count).Error
+	err := db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", "ykt_applications").Scan(&count).Error
 	if err != nil || count == 0 {
 		fmt.Println("Applications table not ready, skipping seed data initialization")
 		return
@@ -777,10 +777,10 @@ func main() {
 		}
 
 		var apps []Application
-		err := DB.Table("applications").
-			Select("applications.*").
-			Joins("JOIN app_permissions ON app_permissions.app_id = applications.app_id").
-			Where("app_permissions.user_type = ?", userType).
+		err := DB.Table("ykt_applications").
+			Select("ykt_applications.*").
+			Joins("JOIN ykt_app_permissions ON ykt_app_permissions.app_id = ykt_applications.app_id").
+			Where("ykt_app_permissions.user_type = ?", userType).
 			Find(&apps).Error
 
 		if err != nil {

@@ -412,8 +412,9 @@ func loadAppsFromJSON() []map[string]interface{} {
 			Type        string `json:"type"`
 			DisplayName string `json:"displayName"`
 			Apps        []struct {
-				Name string `json:"name"`
-				Port int    `json:"port"`
+				Name    string `json:"name"`
+				Port    int    `json:"port"`
+				BaseURL string `json:"base_url"`
 			} `json:"apps"`
 		} `json:"userTypes"`
 	}
@@ -454,7 +455,7 @@ func loadAppsFromJSON() []map[string]interface{} {
 				"name":           app.Name,
 				"container_name": containerName,
 				"port":           app.Port,
-				"base_url":       "http://localhost",
+				"base_url":       app.BaseURL,
 				"description":    fmt.Sprintf("%s - %s", userType.DisplayName, app.Name),
 				"user_types":     userTypes,
 			}

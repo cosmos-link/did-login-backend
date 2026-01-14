@@ -29,8 +29,8 @@ jobs:
         run: |
           echo "🔍 从config.ini读取APP_NAME和APP_PORT..."
           # 调用scripts/get_config.go读取配置，指定默认值
-          APP_NAME=$(go run scripts/get_config.go app name "go-webserver")
-          APP_PORT=$(go run scripts/get_config.go app port "8001")
+          APP_NAME=$(go run scripts/get_config.go app name "did-new")
+          APP_PORT=$(go run scripts/get_config.go app port "60208")
           # 写入环境变量
           echo "APP_NAME=${APP_NAME}" >> $GITHUB_ENV
           echo "APP_PORT=${APP_PORT}" >> $GITHUB_ENV
@@ -69,7 +69,7 @@ jobs:
           docker save -o ${{ env.DOCKER_IMAGE_NAME }}.tar ${{ env.DOCKER_IMAGE_NAME }}:latest
           echo "✅ Docker镜像构建并保存完成"
           echo "镜像包含："
-          echo "  - Go后端应用 (端口8080)"
+          echo "  - Go后端应用"
           echo "  - Nginx前端服务 (端口80)"
           echo "  - 静态文件服务"
 
@@ -95,7 +95,7 @@ jobs:
 
             # 强制清理旧容器（无论端口是否被占用）
             echo "🔴 强制清理旧容器..."
-            OCCUPIED_CONTAINER=$(docker ps -q --filter "name=go-webserver")
+            OCCUPIED_CONTAINER=${{ env.DOCKER_CONTAINER_NAME }}
             if [ -n "$OCCUPIED_CONTAINER" ]; then
               echo "发现旧容器，停止中..."
               docker stop $OCCUPIED_CONTAINER 2>/dev/null || true

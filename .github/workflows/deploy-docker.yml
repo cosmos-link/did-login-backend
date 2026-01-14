@@ -95,7 +95,7 @@ jobs:
 
             # 强制清理旧容器（无论端口是否被占用）
             echo "🔴 强制清理旧容器..."
-            OCCUPIED_CONTAINER=$(docker ps -q --filter "name=go-webserver")
+            OCCUPIED_CONTAINER=$(docker ps -q --filter "name=${CONTAINER_NAME}")
             if [ -n "$OCCUPIED_CONTAINER" ]; then
               echo "发现旧容器，停止中..."
               docker stop $OCCUPIED_CONTAINER 2>/dev/null || true
